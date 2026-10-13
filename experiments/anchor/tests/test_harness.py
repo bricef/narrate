@@ -160,3 +160,11 @@ def test_the_review_page_hides_names_until_revealed(tmp_path):
     assert "(x)" in revealed and "(a)" in revealed
     # The letters don't change between runs of the page
     assert review(plan, store).read_text() == blind
+
+
+def test_openai_token_formula_matches_its_published_table():
+    from anchor.providers.openai import output_tokens
+
+    assert output_tokens("gpt-image-2", "high", 1024, 1024) == 7024  # $0.211, as OpenAI's table says
+    assert output_tokens("gpt-image-2", "high", 1536, 1024) == 5488  # $0.165
+    assert output_tokens("gpt-image-2.5-flare", "max", 2048, 1152) == 5650  # $0.17

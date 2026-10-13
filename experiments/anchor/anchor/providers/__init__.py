@@ -13,6 +13,9 @@ from .base import Service
 ADAPTERS = {
     "fake-image": "fake:FakeImage",
     "fake-video": "fake:FakeVideo",
+    "openai": "openai:OpenAIImage",
+    "bfl": "bfl:BFLImage",
+    "google": "google:GeminiImage",
 }
 
 

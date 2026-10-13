@@ -51,23 +51,22 @@ portrait:
   candidates: 3         # per model and voice; the best is picked by eye (python -m anchor pick)
 
 image_models:
-  nano-banana:          # Google Nano Banana 2.1, 2K 16:9
+  nano-banana:          # Google Nano Banana 2.1, 2K 16:9 (2752x1536); SynthID-watermarked
     provider: google
-    model: TODO         # confirmed by the API research
+    model: gemini-nano-banana-2.1
     size: 2K
-    est_usd: 0.05
-  gpt-image:            # OpenAI GPT Image 2, high quality
+    est_usd: 0.055        # $0.0504 for the image, plus its thinking tokens
+  gpt-image:            # OpenAI GPT Image 2.5 Flare at max: #2 on Artificial Analysis, same tokens as GPT Image 2 high
     provider: openai
-    model: gpt-image-2
-    quality: high
-    size: 2048x1152
-    est_usd: 0.20
-  flux:                 # Black Forest Labs FLUX.2 [pro]
+    model: gpt-image-2.5-flare
+    quality: max
+    size: 2048x1152       # a documented 16:9 size (edges must be multiples of 16)
+    est_usd: 0.17
+  flux:                 # Black Forest Labs FLUX 3 Image, 2k tier; it takes no seed and can't be pinned
     provider: bfl
-    model: TODO
-    width: 2048
-    height: 1152
-    est_usd: 0.06
+    model: flux-3-image   # or flux-2-pro, with width/height/seed (pinned; $0.06 at 2048x1152)
+    resolution: 2k
+    est_usd: 0.10
   seedream:             # ByteDance Seedream 5.0, on BytePlus (the same account as OmniHuman)
     provider: byteplus-image
     model: TODO
