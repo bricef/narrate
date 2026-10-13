@@ -18,6 +18,8 @@ ADAPTERS = {
     "google": "google:GeminiImage",
     "byteplus-image": "byteplus:SeedreamImage",
     "omnihuman": "byteplus:OmniHuman",
+    "hedra": "hedra:HedraAvatar",
+    "heygen": "heygen:HeyGenAvatar",
 }
 
 
