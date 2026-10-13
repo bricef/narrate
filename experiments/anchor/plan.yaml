@@ -84,10 +84,10 @@ avatars:
     resolution: 1080p
     aspect: "16:9"
     est_usd_per_s: 0.0625
-  kling:                # Kling Avatar, standard mode
+  kling:                # Kling Avatar, pro mode (1080p; std is 720p at $0.056/s). API access is prepaid packs
     provider: kling-avatar
-    mode: std
-    est_usd_per_s: 0.056
+    mode: pro
+    est_usd_per_s: 0.112
   heygen:               # HeyGen Avatar IV, from a photo and our audio
     provider: heygen
     width: 1920
@@ -116,11 +116,11 @@ phases:
       The news anchor turns from the camera to look at a large screen behind the desk,
       then back, in one smooth movement. Studio lighting, no text on screen.
     video:
-      veo-fast:         # Google Veo 3.1 Fast, image-to-video, 1080p needs 8 s
-        provider: veo
-        model: TODO
-        seconds: 8
-        est_usd_per_s: 0.12
+      omni:             # Google Gemini Omni Flash 1.1, image-to-video (Veo 3.1 Fast's Gemini API model ends 2026-10-22)
+        provider: omni
+        model: gemini-omni-1.1-flash
+        seconds: 8          # 3–10 s; audio is always made, and the clip is used silent
+        est_usd_per_s: 0.152  # 1080p (upscaled); only the 720p price (~$0.10/s) is documented
       kling-video:      # Kling 3.0, image-to-video, silent
         provider: kling-video
         seconds: 5

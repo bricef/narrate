@@ -20,6 +20,9 @@ ADAPTERS = {
     "omnihuman": "byteplus:OmniHuman",
     "hedra": "hedra:HedraAvatar",
     "heygen": "heygen:HeyGenAvatar",
+    "omni": "google:OmniVideo",
+    "kling-avatar": "kling:KlingAvatar",
+    "kling-video": "kling:KlingVideo",
 }
 
 
