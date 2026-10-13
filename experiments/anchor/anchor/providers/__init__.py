@@ -16,6 +16,8 @@ ADAPTERS = {
     "openai": "openai:OpenAIImage",
     "bfl": "bfl:BFLImage",
     "google": "google:GeminiImage",
+    "byteplus-image": "byteplus:SeedreamImage",
+    "omnihuman": "byteplus:OmniHuman",
 }
 
 

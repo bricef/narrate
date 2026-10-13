@@ -67,11 +67,11 @@ image_models:
     model: flux-3-image   # or flux-2-pro, with width/height/seed (pinned; $0.06 at 2048x1152)
     resolution: 2k
     est_usd: 0.10
-  seedream:             # ByteDance Seedream 5.0, on BytePlus (the same account as OmniHuman)
+  seedream:             # ByteDance Seedream 5.0 Pro, on BytePlus ModelArk (the same account as OmniHuman)
     provider: byteplus-image
-    model: TODO
-    size: 2048x1152
-    est_usd: 0.05
+    model: dola-seedream-5-0-pro-260628
+    size: 2048x1152       # $0.045 up to 2.61 MP; no seed; its "AI-generated" watermark is turned off
+    est_usd: 0.045
 
 # Phases 2–3: the talking-avatar services. Each animates one portrait to one audio file, lip-synced.
 avatar_prompt: >-
@@ -93,9 +93,10 @@ avatars:
     width: 1920
     height: 1080
     est_usd_per_s: 0.05
-  omnihuman:            # ByteDance OmniHuman 1.5, on BytePlus
+  omnihuman:            # ByteDance OmniHuman 1.5, on BytePlus Vision (needs an enterprise-verified account)
     provider: omnihuman
     resolution: 1080p
+    uploads: litterbox    # it only takes public URLs: the portrait and audio are published for an hour
     est_usd_per_s: 0.12
 
 phases:
