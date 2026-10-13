@@ -1,0 +1,127 @@
+# The anchor experiment's inputs (narrate #87). Everything the harness sends to a service is here.
+#
+# Review this file before anything is spent:
+#   uv run python -m anchor plan          every call, what it sends, and its estimated cost
+# Nothing that costs money runs without --spend, and the ledger refuses a call that would pass budget_usd.
+
+budget_usd: 70
+run: 2026-10            # outputs go to runs/<run>/, which git ignores
+
+# Phase 0: what the anchor says, voiced by narrate itself (ElevenLabs, its best model).
+# Each line is spoken in both voices; every clip of a voice uses exactly the same audio file.
+voices:
+  engine: elevenlabs
+  model: eleven_v4
+  male: George          # British, warm (an ElevenLabs default voice)
+  female: Lily          # British, warm (an ElevenLabs default voice; narrate's intro narrator)
+
+lines:
+  # About 10 s each: a typical shot.
+  L1: >-
+    Good evening, and welcome. Our top story tonight: a new tool turns plain text
+    into finished video, voice and all, in minutes rather than days.
+  L2: >-
+    Its makers say the scripts are written like documents, reviewed like code,
+    and rebuilt automatically whenever the product they describe changes.
+  L3: >-
+    Now the weather. It turns colder overnight, with rain spreading from the west
+    by morning, and brighter spells returning across the south by the afternoon.
+  # About 30 s: does the face drift over a longer take?
+  D30: >-
+    And finally tonight, a story from the coast. Volunteers in a small harbour town
+    spent the weekend restoring a lighthouse that has guided fishing boats home for
+    more than a century. The lamp was switched on again at dusk on Sunday, to
+    applause from a crowd of several hundred people. The keeper's granddaughter, who
+    grew up in the cottage below, said it felt like welcoming an old friend home.
+    That's all from us. Good night.
+
+# Phase 1: the anchor's portrait. The same prompt goes to every image model; {person} is filled in per voice.
+# Framing matters for the avatar services: a frontal face, mouth closed, the head well inside the frame.
+portrait:
+  prompt: >-
+    Photorealistic photograph of {person}, a television news anchor seated at a
+    modern news desk in a broadcast studio. Medium shot from the chest up, centred,
+    facing the camera, neutral friendly expression, mouth closed, hands resting on
+    the desk. Soft key light, shallow depth of field, a blurred studio background
+    with screens. No text, no logos, no captions, no on-screen graphics.
+  people:
+    male: a man in his forties with short dark hair, wearing a navy suit and a white shirt
+    female: a woman in her thirties with shoulder-length brown hair, wearing a dark blazer
+  aspect: "16:9"
+  candidates: 3         # per model and voice; the best is picked by eye (python -m anchor pick)
+
+image_models:
+  nano-banana:          # Google Nano Banana 2.1, 2K 16:9
+    provider: google
+    model: TODO         # confirmed by the API research
+    size: 2K
+    est_usd: 0.05
+  gpt-image:            # OpenAI GPT Image 2, high quality
+    provider: openai
+    model: gpt-image-2
+    quality: high
+    size: 2048x1152
+    est_usd: 0.20
+  flux:                 # Black Forest Labs FLUX.2 [pro]
+    provider: bfl
+    model: TODO
+    width: 2048
+    height: 1152
+    est_usd: 0.06
+  seedream:             # ByteDance Seedream 5.0, on BytePlus (the same account as OmniHuman)
+    provider: byteplus-image
+    model: TODO
+    size: 2048x1152
+    est_usd: 0.05
+
+# Phases 2–3: the talking-avatar services. Each animates one portrait to one audio file, lip-synced.
+avatar_prompt: >-
+  A television news anchor speaking to camera at a news desk: calm, professional
+  delivery, natural blinks and small head movements, hands still on the desk.
+
+avatars:
+  hedra:                # Hedra Avatar
+    provider: hedra
+    resolution: 1080p
+    aspect: "16:9"
+    est_usd_per_s: 0.0625
+  kling:                # Kling Avatar, standard mode
+    provider: kling-avatar
+    mode: std
+    est_usd_per_s: 0.056
+  heygen:               # HeyGen Avatar IV, from a photo and our audio
+    provider: heygen
+    width: 1920
+    height: 1080
+    est_usd_per_s: 0.05
+  omnihuman:            # ByteDance OmniHuman 1.5, on BytePlus
+    provider: omnihuman
+    resolution: 1080p
+    est_usd_per_s: 0.12
+
+phases:
+  # Phase 2: every chosen portrait (4 models × 2 voices) through every avatar service, on one line.
+  "2":
+    lines: [L1]
+  # Phase 3: the two best services from phase 2, the best portrait per voice, on the other lines.
+  # Fill these in after reviewing phase 2 (or pass --avatars hedra,kling).
+  "3":
+    avatars: []
+    portraits: {male: null, female: null}     # an image model's name, e.g. nano-banana
+    lines: [L2, L3, D30]
+  # Phase 4 (optional): shots with movement but no speech, from the same portrait: does the identity hold?
+  "4":
+    enabled: false
+    prompt: >-
+      The news anchor turns from the camera to look at a large screen behind the desk,
+      then back, in one smooth movement. Studio lighting, no text on screen.
+    video:
+      veo-fast:         # Google Veo 3.1 Fast, image-to-video, 1080p needs 8 s
+        provider: veo
+        model: TODO
+        seconds: 8
+        est_usd_per_s: 0.12
+      kling-video:      # Kling 3.0, image-to-video, silent
+        provider: kling-video
+        seconds: 5
+        est_usd_per_s: 0.112

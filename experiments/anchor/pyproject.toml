@@ -1,0 +1,26 @@
+[project]
+name = "anchor-experiment"
+version = "0.1.0"
+description = "Which services can make a consistent, AI-generated news anchor that speaks narrate's narration (narrate #87)"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.32",
+    "pyyaml>=6.0",
+    "pillow>=11.0",
+    "numpy>=2.0",
+    "pyjwt>=2.9",
+]
+
+[project.optional-dependencies]
+# Face-identity scoring (ArcFace through insightface), run on the CPU
+score = ["insightface>=0.7.3", "onnxruntime>=1.20", "opencv-python-headless>=4.10"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,4 @@
+# Everything a run makes (audio, portraits, clips, the ledger) stays out of git
+/runs/
+/.venv/
+/.env
