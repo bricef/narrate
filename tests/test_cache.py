@@ -70,3 +70,18 @@ def test_files_from_before_engine_folders_are_listed(root):
     legacy.parent.mkdir(parents=True)
     np.save(legacy, np.zeros(10, dtype=np.float32))
     assert [e.engine for e in cache.entries()] == ["legacy"]
+
+
+def test_cache_timestamp_refresh_ignores_oserror(tmp_path, monkeypatch):
+    from narrate.tts import SpeechCache
+    import numpy as np
+
+    cache_file = tmp_path / "sample.npy"
+    np.save(cache_file, np.zeros((10,)))
+
+    def mock_utime(p):
+        raise PermissionError("Permission denied")
+
+    monkeypatch.setattr("os.utime", mock_utime)
+    loaded = SpeechCache.load(cache_file)
+    assert loaded is not None
