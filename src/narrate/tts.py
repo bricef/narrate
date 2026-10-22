@@ -206,7 +206,10 @@ class SynthCache:
             audio = np.load(path)
         except (FileNotFoundError, ValueError, OSError):
             return None
-        os.utime(path)
+        try:
+            os.utime(path)
+        except OSError:
+            pass
         return audio
 
 
