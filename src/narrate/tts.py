@@ -206,7 +206,12 @@ class SynthCache:
             audio = np.load(path)
         except (FileNotFoundError, ValueError, OSError):
             return None
-        os.utime(path)
+        try:
+            os.utime(path)
+        except OSError:
+            # Timestamp refresh is only a hint for pruning; ignore if we can't update it
+            # (e.g. the file is owned by another user in a shared cache).
+            pass
         return audio
 
 
