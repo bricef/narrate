@@ -70,3 +70,13 @@ def test_files_from_before_engine_folders_are_listed(root):
     legacy.parent.mkdir(parents=True)
     np.save(legacy, np.zeros(10, dtype=np.float32))
     assert [e.engine for e in cache.entries()] == ["legacy"]
+
+
+def test_cache_hit_ignores_permission_error_on_timestamp(root, monkeypatch):
+    """A cache hit should succeed even if refreshing the timestamp raises OSError."""
+    path = entry(root, "kokoro", "hit", 400, 50)
+    def fail_utime(*args, **kwargs):
+        raise OSError("Permission denied")
+    monkeypatch.setattr("os.utime", fail_utime)
+    audio = SynthCache.load(path)
+    assert audio is not None
