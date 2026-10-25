@@ -138,7 +138,11 @@ def output(media: Media, ctx: Context) -> Path:
     path = location(media.render, ctx)
     if path.exists() and not (r.stored and ctx.regenerate):
         if not r.stored:
-            path.touch()
+            try:
+                path.touch()
+            except OSError:
+                # Timestamp refresh is only a hint for pruning; ignore if we can't update it.
+                pass
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(f"{path.stem}.part.png")
