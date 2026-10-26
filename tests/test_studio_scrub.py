@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 import numpy as np
 import pytest
 from PIL import Image
-from playwright.sync_api import expect
+from playwright.sync_api import Error as PlaywrightError, expect, sync_playwright
 from starlette.testclient import TestClient
 
 from narrate import media
@@ -20,7 +20,7 @@ from narrate.studio.preview import Files, frame, page_html
 from narrate.studio.server import create_app
 from narrate.tts import SilentSynth
 
-from test_studio_e2e import page, running  # noqa: F401 - the browser fixture
+from test_studio_e2e import running  # noqa: F401 - the browser fixture
 
 # Something on every clock a page can use: a CSS animation (green, 100 px a second), a script moving a
 # box on requestAnimationFrame's time (magenta, 100 px a second), a timer revealing a box at 1.5 s
@@ -147,6 +147,22 @@ def built(video, frame_index: int, project) -> dict:
             "late": where(pixels, 70, (0, 255, 255)) is not None, "cue": where(pixels, 160, (255, 255, 0)) is not None}
 
 
+@pytest.fixture(params=["chromium", "webkit"])
+def scrub_page(request):
+    with sync_playwright() as playwright:
+        browser_type = getattr(playwright, request.param)
+        try:
+            browser = browser_type.launch()
+        except PlaywrightError as error:
+            if request.param == "webkit":
+                pytest.skip(f"Playwright WebKit is not installed: {error}")
+            raise
+        try:
+            yield browser.new_page()
+        finally:
+            browser.close()
+
+
 PREVIEWED = """() => {
   const left = (id) => document.getElementById(id).getBoundingClientRect().left;
   const style = (id) => getComputedStyle(document.getElementById(id));
@@ -154,7 +170,8 @@ PREVIEWED = """() => {
 }"""
 
 
-def test_scrubbing_shows_each_moment_as_a_build_captures_it(project, page):  # noqa: F811
+def test_scrubbing_shows_each_moment_as_a_build_captures_it(project, scrub_page):
+    page = scrub_page
     script = project / "s.md"
     script.write_text(SCRIPT)
     with ThreadPoolExecutor(1) as pool:  # a build of its own, beside the browser driving the studio

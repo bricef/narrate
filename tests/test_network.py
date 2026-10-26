@@ -4,6 +4,8 @@ Each test's target is a web server on this machine, which records what it's
 asked for: refused, it must hear nothing at all.
 """
 
+import asyncio
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -143,6 +145,58 @@ def test_a_public_page_loads_but_not_what_it_points_to_here(tmp_path, site, monk
     finally:
         public.stop()
     assert site.asked == []
+
+
+def test_http_proxy_connects_to_the_checked_address(monkeypatch):
+    class Writer:
+        request = b""
+
+        def write(self, data):
+            self.request += data
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            pass
+
+    writer = Writer()
+    connection = None
+
+    async def open_proxy(host, port, **kwargs):
+        nonlocal connection
+        connection = (host, port)
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        reader.feed_eof()
+        return reader, writer
+
+    monkeypatch.setattr(network, "connect", open_proxy)
+
+    async def connect():
+        result_reader, result_writer = await network._through_proxy("http://proxy.example:8080", PUBLIC, 443)
+        assert isinstance(result_reader, asyncio.StreamReader) and result_writer is writer
+
+    asyncio.run(connect())
+    assert connection == ("proxy.example", 8080)
+    assert writer.request.startswith(f"CONNECT {PUBLIC}:443 HTTP/1.1\r\n".encode())
+
+
+def test_proxy_selection_honours_http_https_and_no_proxy(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://http-proxy.example:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://https-proxy.example:8080")
+    monkeypatch.setenv("NO_PROXY", ".example.test")
+    if os.name != "nt":
+        monkeypatch.delenv("http_proxy", raising=False)
+        monkeypatch.delenv("https_proxy", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+
+    assert network.Guard._proxy("example.org", 80) == "http://http-proxy.example:8080"
+    assert network.Guard._proxy("example.org", 443) == "http://https-proxy.example:8080"
+    assert network.Guard._proxy("api.example.test", 443) is None
 
 
 def test_an_html_scene_loads_its_own_files_but_no_local_address(tmp_path, site):

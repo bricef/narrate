@@ -595,6 +595,10 @@ docker run -p 8788:8788 -v narrate-data:/data -v narrate-cache:/cache -e ELEVENL
   network. `--allow-local-network` lets every build job reach them, the
   service included. A job can't ask for it, and `NARRATE_ALLOW_LOCAL_NETWORK`
   doesn't reach jobs.
+- **HTTP proxies:** builds honour `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`
+  (including lowercase forms). narrate resolves and checks each destination
+  first, then asks the configured proxy to connect to that checked address.
+  Local addresses remain refused unless `--allow-local-network` is set.
 - **Speech:** jobs use Kokoro unless they ask for another engine, or you
   start it with `--tts`. With `"tts": "elevenlabs"`, a job uses the service's
   own `ELEVENLABS_API_KEY`, from its environment or a `.env` where it starts.
@@ -840,6 +844,7 @@ takes `--keep-work`. `narrate COMMAND --help` lists every option.
 | `NARRATE_KOKORO_WORKERS` | up to 4 | Kokoro sessions at once |
 | `NARRATE_JOBS` | up to 4 | encodes at once, like `--jobs` |
 | `NARRATE_ALLOW_LOCAL_NETWORK` | none | `1` lets captured pages reach this machine and private networks, like `--allow-local-network` (not for `narrate serve`'s jobs) |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | system settings | proxy for captured pages; `NO_PROXY` bypasses it (lowercase names work too) |
 | `NARRATE_STT_MODEL` | `small` | faster-whisper model for transcribing recordings |
 | `NARRATE_MUSIC_DIR` | none | recordings to use instead of the built-in music |
 | `NARRATE_FFMPEG` | narrate's own on Linux; on macOS, Homebrew's `ffmpeg-full` or the one on `PATH` | the ffmpeg to use |

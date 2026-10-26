@@ -10,10 +10,12 @@
 // posts the time again once it has loaded); a page without scripts seeks straight there.
 (() => {
   const FPS = 30;
+  const timers = ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "requestAnimationFrame",
+                  "cancelAnimationFrame", "Date", "performance"];
+  if ("requestIdleCallback" in window) timers.push("requestIdleCallback", "cancelIdleCallback");
   const clock = NarrateFakeTimers.withGlobal(window).install({
     now: 0,
-    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "requestAnimationFrame",
-             "cancelAnimationFrame", "requestIdleCallback", "cancelIdleCallback", "Date", "performance"],
+    toFake: timers,
   });
   const seek = window.__narrateSeek;
   const ms = (frame) => Math.round((frame * 1000) / FPS);

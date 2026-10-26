@@ -18,10 +18,14 @@ Files (file://) don't go through it, so pages load their project files as before
 from __future__ import annotations
 
 import asyncio
+import base64
 import ipaddress
 import os
+import ssl
 import socket
 import threading
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 
 FLAG = "--allow-local-network"
@@ -175,11 +179,29 @@ class Guard:
             return REFUSED
         for address in reachable:  # the very addresses checked: no second lookup
             try:
+                proxy = self._proxy(host, port)
+                if proxy:
+                    return await asyncio.wait_for(_through_proxy(proxy, address, port), CONNECT_TIMEOUT)
                 return await asyncio.wait_for(connect(address, port), CONNECT_TIMEOUT)
             except (OSError, asyncio.TimeoutError):
+                if proxy:
+                    break
                 continue
         self._fail(Failure(target, False))
         return UNREACHABLE
+
+    @staticmethod
+    def _proxy(host: str, port: int) -> str | None:
+        """The configured HTTP proxy for this destination, unless NO_PROXY excludes it."""
+        host = host.strip("[]")
+        proxies = urllib.request.getproxies()
+        if urllib.request.proxy_bypass_environment(host, proxies):
+            return None
+        if not any(name in os.environ for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                                                    "http_proxy", "https_proxy", "all_proxy")) and \
+                urllib.request.proxy_bypass(host):
+            return None
+        return proxies.get("https" if port == 443 else "http") or proxies.get("all")
 
     def _fail(self, failure: Failure) -> None:
         with self._lock:
@@ -188,6 +210,33 @@ class Guard:
 
 def _reply(writer: asyncio.StreamWriter, code: int) -> None:
     writer.write(bytes([5, code, 0, IPV4]) + bytes(6))  # bound address 0.0.0.0:0: Chromium doesn't use it
+
+
+async def _through_proxy(proxy: str, address: str, port: int):
+    """Tunnel to an already checked address through an HTTP(S) proxy."""
+    if "://" not in proxy:
+        proxy = "http://" + proxy
+    parsed = urllib.parse.urlsplit(proxy)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise OSError("unsupported proxy URL")
+    proxy_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    tls = ssl.create_default_context() if parsed.scheme == "https" else None
+    reader, writer = await connect(parsed.hostname, proxy_port, ssl=tls,
+                                  server_hostname=parsed.hostname if tls else None)
+    authority = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+    headers = [f"CONNECT {authority} HTTP/1.1", f"Host: {authority}", "Proxy-Connection: Keep-Alive"]
+    if parsed.username is not None:
+        credentials = urllib.parse.unquote(parsed.username) + ":" + urllib.parse.unquote(parsed.password or "")
+        token = base64.b64encode(credentials.encode()).decode("ascii")
+        headers.append(f"Proxy-Authorization: Basic {token}")
+    writer.write(("\r\n".join(headers) + "\r\n\r\n").encode("ascii"))
+    await writer.drain()
+    response = await reader.readuntil(b"\r\n\r\n")
+    status = response.split(b"\r\n", 1)[0].split()
+    if len(status) < 2 or status[1] != b"200":
+        writer.close()
+        raise OSError("proxy refused CONNECT")
+    return reader, writer
 
 
 async def _pipe(source: asyncio.StreamReader, sink: asyncio.StreamWriter) -> None:
