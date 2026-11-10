@@ -51,7 +51,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling>=1.32.4"]  # Dependabot keeps this current; narrate needs 1.27 or later, the first to write PEP 639 licence metadata by default
+requires = ["hatchling>=1.33.0"]  # Dependabot keeps this current; narrate needs 1.27 or later, the first to write PEP 639 licence metadata by default
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
