@@ -248,9 +248,12 @@ its image, `1`. Those that pin `@v1.2.3` keep the image `1.2.3`.
 
 1. **Parse:** `script.py` splits the script into scenes and blocks, and
    `config.py` reads the header.
-2. **Plan:** `build.py` synthesises each scene's narration (in the background,
-   in script order). It then lays out the scene on a frame-exact timeline:
-   30 frames a second, 800 audio samples per frame at 24 kHz.
+2. **Plan:** `build.py` first reads the background music, making a built-in
+   track if the cache doesn't have it yet, so that a problem with it stops the
+   build before anything is synthesised or captured. It then synthesises each
+   scene's narration (in the background, in script order), and lays out the
+   scene on a frame-exact timeline: 30 frames a second, 800 audio samples per
+   frame at 24 kHz.
 3. **Render:**
    - Headless Chromium draws every still frame, slide and callout as HTML and
      CSS (`frames.py`), so CSS themes apply as written. HTML scenes and

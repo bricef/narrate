@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from narrate import media, music
-from narrate.build import Builder
+from narrate.build import Builder, BuildError
+from narrate.cli import main
 from narrate.script import parse_file
 from narrate.tts import SilentSynth
 
@@ -49,3 +50,82 @@ def test_builtin_track_plays_under_a_script(tmp_path):
     assert not any("ukulele" in n for n in result.notes)
     audio = media.decode_audio(result.video, music.SR)
     assert float(np.sqrt(np.mean(audio[-music.SR:] ** 2))) > 0.003  # music is audible
+
+
+# A build's background music is ready before it spends anything (#90): a problem with it used to surface
+# only once every scene and overlay was captured, and all of that was lost.
+
+
+class Counting(SilentSynth):
+    """Silent speech that records what it synthesises, several requests at a time as ElevenLabs does, so a
+    build starts synthesising the whole script in the background before it plans the first scene."""
+
+    concurrency = 4
+
+    def __init__(self):
+        self.spoken = []
+
+    def synth(self, text, voice, speed, notes, only_cached=False):
+        if only_cached:
+            return None  # nothing is in the cache
+        self.spoken.append(text)
+        return super().synth(text, voice, speed, notes)
+
+
+def unmakeable(project, monkeypatch):
+    def refuse(name):  # as when the cache's music folder can't be written
+        raise PermissionError(13, "Permission denied", f"/cache/tools/music/v2/{name}.part")
+
+    monkeypatch.setattr(music, "track", refuse)
+    return "uplifting-2", r"background track uplifting-2 couldn't be made: \[Errno 13\] Permission denied"
+
+
+def missing(project, monkeypatch):
+    return "music.mp3", "background file not found: music.mp3"
+
+
+def undecodable(project, monkeypatch):
+    (project / "music.mp3").write_bytes(b"not really an mp3")
+    return "music.mp3", "background music.mp3 couldn't be decoded: ffmpeg failed"
+
+
+MUSIC_PROBLEMS = [unmakeable, missing, undecodable]
+
+
+def with_music_problem(project, monkeypatch, problem):
+    """A script whose background music has `problem`, and the error that should name it. An HTML scene and
+    an overlay over the whole video are what a build captures frame by frame, the costly part."""
+    source, message = problem(project, monkeypatch)
+    (project / "page.html").write_text("<!doctype html><style>body{background:navy}</style>")
+    path = project / "s.md"
+    path.write_text(f"---\nsize: 320x180\nbackground: {source}\noverlay: page.html\n---\n\n"
+                    "![](page.html)\n\nThe first scene.\n\n---\n\nThe second scene.\n")
+    return parse_file(path), message
+
+
+@pytest.mark.parametrize("scenes", [None, [2]], ids=["whole", "some-scenes"])
+@pytest.mark.parametrize("problem", MUSIC_PROBLEMS)
+def test_a_music_problem_stops_a_build_before_it_synthesises_or_captures(tmp_path, monkeypatch, problem, scenes):
+    script, message = with_music_problem(tmp_path, monkeypatch, problem)
+    synth, work = Counting(), tmp_path / "work"
+    with pytest.raises(BuildError, match=message):
+        Builder(script, synth, log=lambda _: None, scenes=scenes).build(tmp_path / "out.mp4", workdir=work)
+    assert synth.spoken == []
+    assert list(work.iterdir()) == []  # where every scene and overlay is captured
+
+
+@pytest.mark.parametrize("problem", MUSIC_PROBLEMS)
+def test_a_music_problem_stops_an_audio_build_before_it_synthesises(tmp_path, monkeypatch, problem):
+    script, message = with_music_problem(tmp_path, monkeypatch, problem)
+    synth = Counting()
+    with pytest.raises(BuildError, match=message):
+        Builder(script, synth, log=lambda _: None).build_audio(tmp_path / "out.mp3")
+    assert synth.spoken == []
+
+
+def test_a_track_that_cant_be_made_is_an_error_not_a_traceback(tmp_path, monkeypatch, capsys):
+    with_music_problem(tmp_path, monkeypatch, unmakeable)
+    monkeypatch.chdir(tmp_path)
+    assert main(["build", "s.md", "--tts", "silent", "-q"]) == 2
+    assert ("error: s.md: background track uplifting-2 couldn't be made: [Errno 13] Permission denied: "
+            "'/cache/tools/music/v2/uplifting-2.part'") in capsys.readouterr().err
