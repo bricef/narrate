@@ -13,16 +13,29 @@ Chromium sends every connection through Guard, a SOCKS5 proxy in this process:
   loopback and link-local addresses to the proxy too (<-loopback>), rather
   than straight there.
 Files (file://) don't go through it, so pages load their project files as before.
+
+Behind an HTTP proxy (#113), Guard goes out through it (proxy_for): HTTPS_PROXY
+for port 443, HTTP_PROXY for the others, and NO_PROXY, as urllib reads them.
+It still resolves and checks every address itself, then asks the proxy for an
+HTTP CONNECT tunnel to the address it checked, never the name, so the proxy
+can't resolve the name differently. A proxy hears nothing of a local address.
+Only http:// proxies are used: ALL_PROXY, and other schemes such as socks5://,
+are ignored, and an https:// one is refused. Names must resolve on this
+machine: letting the proxy resolve them is #132.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import ipaddress
 import os
 import socket
 import threading
-from dataclasses import dataclass
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
+from http import HTTPStatus
 
 FLAG = "--allow-local-network"
 ENV = "NARRATE_ALLOW_LOCAL_NETWORK"
@@ -57,17 +70,18 @@ def resolve(host: str, port: int) -> list[str]:
     return list(dict.fromkeys(str(info[4][0]) for info in infos))
 
 
-connect = asyncio.open_connection  # the proxy's way out to an address it has checked
+connect = asyncio.open_connection  # the proxy's way out to an address it has checked, or to an HTTP proxy
 
 
 @dataclass(frozen=True)
 class Failure:
     """A connection the proxy didn't make: `target` is host:port, with the address it resolved to when the
     host is a name. `local` when it was refused as a local address; otherwise it found no address, or none
-    answered."""
+    answered. `why` says what an HTTP proxy did instead, when there is one."""
 
     target: str
     local: bool
+    why: str = ""
 
 
 class Unreachable(Exception):
@@ -75,8 +89,106 @@ class Unreachable(Exception):
 
     def __init__(self, failure: Failure):
         super().__init__(f"{failure.target} is a local address ({ALLOW})" if failure.local
-                         else f"couldn't reach {failure.target}")
+                         else f"couldn't reach {failure.target}" + (f" ({failure.why})" if failure.why else ""))
         self.failure = failure
+
+
+@dataclass(frozen=True)
+class Proxy:
+    """An HTTP proxy to tunnel through. It shows as host:port: the credentials in its URL go to it, in
+    `authorization`, and nowhere else."""
+
+    host: str
+    port: int
+    authorization: str | None = field(default=None, repr=False)  # Proxy-Authorization's value
+
+    def __str__(self) -> str:
+        return f"[{self.host}]:{self.port}" if ":" in self.host else f"{self.host}:{self.port}"
+
+
+class ProxyError(Exception):
+    """The proxy can't be used or reached, so no address will do. Its message never holds credentials."""
+
+
+class TunnelError(Exception):
+    """The proxy didn't open a tunnel to one address. Its message never holds credentials."""
+
+
+def proxy_for(host: str, port: int) -> Proxy | None:
+    """The HTTP proxy to reach `host` through, as urllib finds it: HTTPS_PROXY for port 443, HTTP_PROXY for the
+    others, and on macOS and Windows the system's settings when no *_PROXY variable is set. None to connect
+    directly, as without a proxy: there's none, NO_PROXY names `host`, or it isn't http:// (ALL_PROXY isn't
+    read, and socks5:// and other schemes are ignored). Raises ProxyError for an https:// proxy, which
+    narrate doesn't support, and for a URL it can't read. May query the system: call it off the loop."""
+    url = urllib.request.getproxies().get("https" if port == 443 else "http")
+    if not url or urllib.request.proxy_bypass(host):
+        return None
+    if "://" not in url:
+        url = "http://" + url  # proxy.example:3128, as curl and Chromium read it
+    scheme = url.split("://", 1)[0].lower()
+    if scheme not in ("http", "https"):
+        return None
+    unreadable = ProxyError("narrate can't read the proxy's URL")  # its text could hold a password: never shown
+    try:
+        parts = urllib.parse.urlsplit(url)
+        name, number = parts.hostname, parts.port or (443 if scheme == "https" else 80)
+    except ValueError:
+        raise unreadable from None
+    # user:pa/ss@host would take "user" for the host: an @ must end the host's part of the URL
+    if not name or ("@" in url and "@" not in parts.netloc):
+        raise unreadable
+    if scheme == "https":
+        raise ProxyError(f"the proxy at {Proxy(name, number)} is https://: narrate supports only http:// proxies")
+    authorization = None
+    if parts.username is not None:
+        credentials = f"{urllib.parse.unquote(parts.username)}:{urllib.parse.unquote(parts.password or '')}"
+        authorization = "Basic " + base64.b64encode(credentials.encode("utf-8", "surrogateescape")).decode("ascii")
+    return Proxy(name, number, authorization)
+
+
+async def tunnel(proxy: Proxy, address: str, port: int):
+    """A connection to `address`, already checked, through `proxy`'s HTTP CONNECT tunnel (RFC 9110, 9.3.6).
+    The proxy is asked for the address, never a name. Raises ProxyError when the proxy can't be reached,
+    and TunnelError when it doesn't open the tunnel: it refuses, closes, or doesn't answer in time."""
+    try:
+        reader, writer = await asyncio.wait_for(connect(proxy.host, proxy.port), CONNECT_TIMEOUT)
+    except (OSError, asyncio.TimeoutError):
+        raise ProxyError(f"couldn't connect to the proxy at {proxy}") from None
+    try:
+        status = await asyncio.wait_for(_ask(reader, writer, proxy, address, port), CONNECT_TIMEOUT)
+    except BaseException as e:
+        writer.close()  # whatever happened, a cancelled build too: no connection to the proxy is left open
+        if isinstance(e, asyncio.TimeoutError):
+            raise TunnelError(f"the proxy at {proxy} didn't answer in {CONNECT_TIMEOUT} s") from None
+        if isinstance(e, (EOFError, OSError)):
+            raise TunnelError(f"the proxy at {proxy} closed the connection without answering") from None
+        if isinstance(e, asyncio.LimitOverrunError):
+            raise TunnelError(f"the proxy at {proxy} answered with something that isn't HTTP") from None
+        raise
+    if 200 <= status < 300:  # any 2xx opens the tunnel
+        return reader, writer
+    writer.close()
+    try:
+        status_text = f"{status} {HTTPStatus(status).phrase}"  # the standard words, not the proxy's own
+    except ValueError:
+        status_text = str(status)
+    raise TunnelError(f"the proxy at {proxy} answered {status_text}")
+
+
+async def _ask(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, proxy: Proxy, address: str,
+               port: int) -> int:
+    """Ask `proxy` for a tunnel to `address`, and return its answer's status."""
+    authority = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+    request = f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n"
+    if proxy.authorization:
+        request += f"Proxy-Authorization: {proxy.authorization}\r\n"
+    writer.write(f"{request}\r\n".encode("ascii"))
+    await writer.drain()
+    head = await reader.readuntil(b"\r\n\r\n")  # what follows, already from the far end, stays in `reader`
+    line = head.split(b"\r\n", 1)[0].split(b" ", 2)  # HTTP/1.1 200 Connection established
+    if len(line) < 2 or not line[0].startswith(b"HTTP/") or len(line[1]) != 3 or not line[1].isdigit():
+        raise TunnelError(f"the proxy at {proxy} answered with something that isn't HTTP")
+    return int(line[1])
 
 
 def note(page: str, target: str) -> str:
@@ -162,10 +274,12 @@ class Guard:
                 upstream[1].close()
 
     async def _open(self, host: str, port: int):
-        """A connection to a public address of `host`, or the SOCKS reply that says why there isn't one."""
+        """A connection to a public address of `host`, directly or through the HTTP proxy for it (proxy_for),
+        or the SOCKS reply that says why there isn't one."""
         target = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        loop = asyncio.get_running_loop()
         try:
-            addresses = await asyncio.get_running_loop().run_in_executor(None, resolve, host, port)
+            addresses = await loop.run_in_executor(None, resolve, host, port)
         except (OSError, UnicodeError):
             addresses = []
         reachable = [a for a in addresses if public(a)]
@@ -173,12 +287,22 @@ class Guard:
             shown = target if addresses[0] == host else f"{target} ({addresses[0]})"
             self._fail(Failure(shown, True))
             return REFUSED
-        for address in reachable:  # the very addresses checked: no second lookup
-            try:
-                return await asyncio.wait_for(connect(address, port), CONNECT_TIMEOUT)
-            except (OSError, asyncio.TimeoutError):
-                continue
-        self._fail(Failure(target, False))
+        why = ""
+        try:
+            # Worked out once, after the check: a proxy hears only of public addresses
+            proxy = await loop.run_in_executor(None, proxy_for, host, port) if reachable else None
+            for address in reachable:  # the very addresses checked: no second lookup
+                try:
+                    if proxy is not None:
+                        return await tunnel(proxy, address, port)
+                    return await asyncio.wait_for(connect(address, port), CONNECT_TIMEOUT)
+                except TunnelError as e:  # the proxy answered, but not with a tunnel there: try the next
+                    why = str(e)
+                except (OSError, asyncio.TimeoutError):
+                    continue
+        except ProxyError as e:  # the proxy itself can't be used or reached: no address will do
+            why = str(e)
+        self._fail(Failure(target, False, why))
         return UNREACHABLE
 
     def _fail(self, failure: Failure) -> None:
