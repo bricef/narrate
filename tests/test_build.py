@@ -11,6 +11,7 @@ from narrate.config import FPS
 from narrate.doctor import find_font
 from narrate.script import parse, parse_file
 from narrate.tts import SilentSynth
+from narrate.cli import main
 
 EXAMPLES = Path(__file__).parent.parent / "reference" / "examples"
 CHAR = SilentSynth.seconds_per_char
@@ -124,6 +125,16 @@ def test_build_end_to_end(project):
     srt = (project / "out.srt").read_text()
     assert "Hello there." in srt and "caption only" in srt
     assert (project / "out.vtt").exists() and result.poster.exists()
+
+
+def test_build_accepts_relative_keep_work(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "script.md").write_text("A short scene.\n")
+
+    assert main(["build", "script.md", "--tts", "silent", "-q", "--keep-work", "work"]) == 0
+
+    assert (tmp_path / "script.mp4").is_file()
+    assert (tmp_path / "work").is_dir()
 
 
 def test_burned_captions_and_custom_font_render(project):
