@@ -792,6 +792,8 @@ class Builder:
             self._frames = None
         self.notes.update(network.note(page, f.target) for page, failed in renderer.failures.items()
                           for f in failed if f.local)
+        # A proxy that refused, or can't be used, is said once for each reason, whatever it kept out
+        self.notes.update(network.proxy_note(f.why) for failed in renderer.failures.values() for f in failed if f.why)
 
         total = out_frame / FPS
         audio = np.concatenate(audio_parts)

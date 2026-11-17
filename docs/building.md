@@ -264,6 +264,44 @@ narrate build project.zip                 # a ZIP of the script and its files
     and the build notes it.
   - **Stored captures** are reused as before: only taking one afresh needs
     the address.
+- **Behind a proxy:** when `HTTPS_PROXY` or `HTTP_PROXY` is set, pages reach
+  the internet through that proxy. narrate still looks up each name and
+  checks the address itself, then asks the proxy for a tunnel (an HTTP
+  `CONNECT`) to that address, never the name. So a local address is refused
+  before the proxy hears of it, and the proxy can't find another address
+  for the name.
+  - **Which proxy:** `HTTPS_PROXY` for port 443, `HTTP_PROXY` for any other
+    port. On macOS and Windows, with no proxy variable set, the system's
+    settings count ([Environment variables](#environment-variables)).
+  - **`NO_PROXY`:** the names it lists, and their subdomains, are reached
+    directly, and still checked.
+  - **Credentials:** a user name and password in the proxy's URL, such as
+    `http://user:pass@proxy:3128`, go to the proxy (Basic authentication)
+    and never into a message. Percent-encode `@`, `/`, `:`, `?` and `#` in
+    them, as `%40`, `%2F`, `%3A`, `%3F` and `%23`. A proxy URL with anything
+    after its host and port but a `/` is refused, so no part of a password
+    is ever taken for the host.
+  - **When the proxy fails:** it refuses a tunnel, such as 407 for wrong
+    credentials, can't be reached, or doesn't answer within 20 seconds. A
+    `render:web` capture then stops, saying what happened, and anything else
+    a page loads that the proxy kept out is noted, once for each reason.
+  - **Only `http://` proxies:** without `--allow-local-network`, `ALL_PROXY`
+    and proxies with another scheme, such as `socks5://`, are ignored.
+    narrate can't tunnel through them, so pages connect directly, as before
+    narrate used proxies at all. An `https://` proxy, with TLS to the proxy
+    itself, isn't supported either. But it's refused rather than ignored: it
+    is plainly the proxy meant for web pages, and going around it would be
+    quietly wrong. Builds say so. Give the proxy's `http://` address.
+  - **This machine must look up names:** on a network where only the proxy
+    can, pages still reach nothing
+    ([#132](https://github.com/bricef/narrate/issues/132)).
+  - **Ports:** proxies that allow tunnels only to port 443, as Squid does by
+    default, refuse `http://` pages.
+  - **With `--allow-local-network`,** narrate checks nothing, and Chromium
+    finds the proxy itself, as a browser would: on a Linux server, from these
+    variables, `ALL_PROXY` included. It sends this machine's own addresses
+    (loopback and link-local) straight there, and anything else through the
+    proxy unless `NO_PROXY` lists it.
 - **Intermediate files** are deleted afterwards; `--keep-work DIR` keeps them
   for inspection.
 - **First build:** the Kokoro voice model downloads (about 350 MB), and from
@@ -485,6 +523,9 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" -v narrate-cache:/cac
   natively on Intel and AMD machines and on Macs with Apple chips.
 - **ElevenLabs:** keep the key in a `.env` in the mounted folder, or pass
   `-e ELEVENLABS_API_KEY`.
+- **Behind a proxy:** pass its variables in too, with
+  `-e HTTPS_PROXY -e HTTP_PROXY -e NO_PROXY`
+  ([Build a video](#build-a-video)).
 - **Other commands** work the same way: put `check script.md`, `audio
   script.md` or `doctor` after the image name.
 - **Fonts:** the image covers Latin, Greek and Cyrillic, plus emoji. For other
@@ -595,6 +636,9 @@ docker run -p 8788:8788 -v narrate-data:/data -v narrate-cache:/cache -e ELEVENL
   network. `--allow-local-network` lets every build job reach them, the
   service included. A job can't ask for it, and `NARRATE_ALLOW_LOCAL_NETWORK`
   doesn't reach jobs.
+- **Proxy:** jobs' pages go through the proxy in the service's own
+  environment, as builds do ([Build a video](#build-a-video)). A job can't
+  choose or change it.
 - **Speech:** jobs use Kokoro unless they ask for another engine, or you
   start it with `--tts`. With `"tts": "elevenlabs"`, a job uses the service's
   own `ELEVENLABS_API_KEY`, from its environment or a `.env` where it starts.
@@ -840,6 +884,8 @@ takes `--keep-work`. `narrate COMMAND --help` lists every option.
 | `NARRATE_KOKORO_WORKERS` | up to 4 | Kokoro sessions at once |
 | `NARRATE_JOBS` | up to 4 | encodes at once, like `--jobs` |
 | `NARRATE_ALLOW_LOCAL_NETWORK` | none | `1` lets captured pages reach this machine and private networks, like `--allow-local-network` (not for `narrate serve`'s jobs) |
+| `HTTPS_PROXY`, `HTTP_PROXY` | Linux: none. macOS and Windows: the system's proxy, when no proxy variable is set | the `http://` proxy captured pages go through, `HTTPS_PROXY` for port 443 and `HTTP_PROXY` for the others ([Build a video](#build-a-video)) |
+| `NO_PROXY` | Linux: none. macOS and Windows: the system's proxy exceptions, when no proxy variable is set | names, with their subdomains, that captured pages reach without the proxy; `*` for all |
 | `NARRATE_STT_MODEL` | `small` | faster-whisper model for transcribing recordings |
 | `NARRATE_MUSIC_DIR` | none | recordings to use instead of the built-in music |
 | `NARRATE_FFMPEG` | narrate's own on Linux; on macOS, Homebrew's `ffmpeg-full` or the one on `PATH` | the ffmpeg to use |
@@ -850,3 +896,18 @@ takes `--keep-work`. `narrate COMMAND --help` lists every option.
 
 Only `ELEVENLABS_API_KEY` is also read from `.env`. Set the others in the
 environment.
+
+narrate reads the proxy settings as Python does:
+- **Linux:** only the variables. Lower-case names, such as `https_proxy`,
+  work too, and win over upper-case ones. A desktop's own proxy settings
+  don't count.
+- **macOS:** the variables. When none is set, not even `NO_PROXY` or
+  `ALL_PROXY`, the network's Web Proxy (HTTP) and Secure Web Proxy (HTTPS)
+  settings, with their bypass list and "Exclude simple hostnames".
+- **Windows:** the variables. When none is set, the manual proxy in
+  Settings, under Network & internet and then Proxy, with its exceptions.
+  "Don't use the proxy server for local (intranet) addresses" sends names
+  without a dot directly. A SOCKS proxy set there is ignored, like
+  `socks5://`.
+- **Not read anywhere:** a proxy configuration script (PAC) or automatic
+  proxy detection.
