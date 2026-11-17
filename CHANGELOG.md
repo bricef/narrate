@@ -16,6 +16,11 @@ Notable changes to narrate, newest first. The format follows
 
 - **The studio scrubs HTML scenes in Safari:** its preview's clock fakes
   only the timers the browser has, and WebKit has no `requestIdleCallback`.
+- **Builds work behind an HTTP proxy:** with `HTTPS_PROXY` or `HTTP_PROXY`
+  set, captured pages reach the internet through it again. narrate still
+  looks up and checks each address itself, then asks the proxy for a tunnel
+  to that address, never the name. `NO_PROXY` is honoured, and only
+  `http://` proxies are used.
 
 ## [0.1.1] - 2026-10-21
 
