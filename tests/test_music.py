@@ -1,3 +1,7 @@
+import errno
+import os
+import wave
+
 import numpy as np
 import pytest
 
@@ -73,7 +77,10 @@ class Counting(SilentSynth):
 
 
 def unmakeable(project, monkeypatch):
-    def refuse(name):  # as when the cache's music folder can't be written
+    # The reported error. From the command line, a music folder that can't be written is now stopped first
+    # by the start-up check (#89): this is a write that fails anyway, in a Builder used without that check,
+    # or in a folder that changes after it.
+    def refuse(name):
         raise PermissionError(13, "Permission denied", f"/cache/tools/music/v2/{name}.part")
 
     monkeypatch.setattr(music, "track", refuse)
@@ -123,9 +130,39 @@ def test_a_music_problem_stops_an_audio_build_before_it_synthesises(tmp_path, mo
     assert synth.spoken == []
 
 
-def test_a_track_that_cant_be_made_is_an_error_not_a_traceback(tmp_path, monkeypatch, capsys):
-    with_music_problem(tmp_path, monkeypatch, unmakeable)
+# wave.open on a file it can't open used to leave a half-made writer, which raised again as it was collected:
+# pytest reports that as this warning, where the command line printed it as a traceback after the error
+@pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
+def test_a_track_that_cant_be_written_is_one_line_of_error(tmp_path, monkeypatch, capsys):
+    media.ffmpeg()  # resolved before switching tools folders, so it isn't fetched again
+    tools = tmp_path / "tools"
+    part = tools / "music" / f"v{music.VERSION}" / "uplifting-2.part"
+    part.mkdir(parents=True)  # where the track is written first: as a folder, it can't be opened, even by root
+    monkeypatch.setenv("NARRATE_TOOLS", str(tools))
+    monkeypatch.delenv("NARRATE_MUSIC_DIR", raising=False)
+    with_music_problem(tmp_path, monkeypatch, lambda project, monkeypatch: ("uplifting-2", None))
     monkeypatch.chdir(tmp_path)
     assert main(["build", "s.md", "--tts", "silent", "-q"]) == 2
-    assert ("error: s.md: background track uplifting-2 couldn't be made: [Errno 13] Permission denied: "
-            "'/cache/tools/music/v2/uplifting-2.part'") in capsys.readouterr().err
+    error = f"[Errno {errno.EISDIR}] {os.strerror(errno.EISDIR)}: {str(part)!r}"
+    assert capsys.readouterr().err.splitlines() == [
+        f"error: s.md: background track uplifting-2 couldn't be made: {error}"]
+
+
+def no_ffmpeg(project, monkeypatch):
+    """A music file that's fine, and no ffmpeg to decode it with."""
+    with wave.open(str(project / "music.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(music.SR)
+        w.writeframes(bytes(2 * music.SR))
+    monkeypatch.setattr(media, "find_ffmpeg", lambda: ("none", None))
+    monkeypatch.setattr(media, "ffmpeg", media.ffmpeg.__wrapped__)  # not the one found already: it looks again
+    return "music.wav", "^no ffmpeg on PATH"
+
+
+def test_no_ffmpeg_is_reported_as_itself_not_as_the_music(tmp_path, monkeypatch):
+    script, message = with_music_problem(tmp_path, monkeypatch, no_ffmpeg)
+    synth = Counting()
+    with pytest.raises(media.MediaError, match=message):  # not a BuildError blaming music.wav
+        Builder(script, synth, log=lambda _: None).build(tmp_path / "out.mp4")
+    assert synth.spoken == []
