@@ -14,6 +14,12 @@ Notable changes to narrate, newest first. The format follows
 
 ### Fixed
 
+- **A problem with the background music stops a build at the start:** a
+  missing music file, one that won't decode, or a built-in track that can't
+  be made in the cache now stops `narrate build` and `narrate audio` before
+  any speech is synthesised or any scene captured, not once every scene is
+  captured. Each error names the music; a track that couldn't be made used
+  to end in a traceback.
 - **The studio scrubs HTML scenes in Safari:** its preview's clock fakes
   only the timers the browser has, and WebKit has no `requestIdleCallback`.
 - **Builds work behind an HTTP proxy:** with `HTTPS_PROXY` or `HTTP_PROXY`

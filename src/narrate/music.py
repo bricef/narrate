@@ -220,7 +220,9 @@ def track(name: str) -> Path:
             audio = audio * 10 ** ((LEVEL_LUFS - measured) / 20)
         pcm = (np.clip(audio, -1, 1) * 32767).astype("<i2")
         part = path.with_suffix(".part")
-        with wave.open(str(part), "wb") as w:
+        # Opened first: when wave.open opens a file that can't be written, its half-made writer
+        # complains again as it's collected, after the error itself (#90)
+        with open(part, "wb") as raw, wave.open(raw, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(SR)

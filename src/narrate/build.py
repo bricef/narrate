@@ -669,8 +669,9 @@ class Builder:
     def _build(self, out: Path, work: Path) -> BuildResult:
         if not self.script.scenes:
             raise BuildError("the script has no scenes")
+        track = self._music_track()  # before any speech is synthesised or any scene captured (#90)
         with self._speech(work):
-            return self._render_all(out, work)
+            return self._render_all(out, work, track)
 
     @contextmanager
     def _speech(self, work: Path):
@@ -692,6 +693,7 @@ class Builder:
             raise BuildError(f"unsupported audio format {out.suffix!r} (use {', '.join(sorted(AUDIO_CODECS))})")
         if not self.script.scenes:
             raise BuildError("the script has no scenes")
+        track = self._music_track()  # before any speech is synthesised (#90)
         own_workdir = workdir is None
         work = Path(tempfile.mkdtemp(prefix="narrate-")) if own_workdir else workdir
         work.mkdir(parents=True, exist_ok=True)
@@ -711,8 +713,8 @@ class Builder:
                     parts.append(fit_length(plan.audio, n))
                     scene_samples.append(n)
             audio = np.concatenate(parts)
-            if self.settings.background:
-                audio = audio + self._music(len(audio), scene_samples)
+            if track is not None:
+                audio = audio + self._music(track, len(audio), scene_samples)
             if self.settings.loudness is not None:
                 audio = media.normalise_loudness(audio, SR, self.settings.loudness)
             peak = float(np.abs(audio).max()) if len(audio) else 0.0
@@ -735,7 +737,7 @@ class Builder:
             if own_workdir:
                 shutil.rmtree(work, ignore_errors=True)
 
-    def _render_all(self, out: Path, work: Path) -> BuildResult:
+    def _render_all(self, out: Path, work: Path, track: np.ndarray | None) -> BuildResult:
         s = self.settings
         scenes = self.script.scenes
         if self.selected is not None:
@@ -797,11 +799,11 @@ class Builder:
 
         total = out_frame / FPS
         audio = np.concatenate(audio_parts)
-        if s.background:
+        if track is not None:
             if self.selected is None:
-                audio = audio + self._music(len(audio), scene_samples)
+                audio = audio + self._music(track, len(audio), scene_samples)
             else:  # the music as it plays under these scenes in the whole video
-                whole = self._music(sum(whole_samples), whole_samples)
+                whole = self._music(track, sum(whole_samples), whole_samples)
                 audio = audio + np.concatenate([whole[lo:hi] for lo, hi in kept])
         if s.loudness is not None:
             audio = media.normalise_loudness(audio, SR, s.loudness)
@@ -1138,14 +1140,34 @@ class Builder:
                     audio[-n:] *= ramp[::-1]
         return audio
 
-    def _music(self, total: int, scene_samples: list[int]) -> np.ndarray:
+    def _music_track(self) -> np.ndarray | None:
+        """The header's background track, decoded: None without one.
+
+        A build reads it first (#90), so a file that's missing or won't decode, or a built-in track
+        that can't be made in the cache, stops the build in its first seconds, not once every scene
+        is captured. Laying it under the scenes (`_music`) waits for their lengths."""
         bg = self.settings.background
+        if bg is None:
+            return None
         candidate = self.script.base_dir / bg.source
         if not candidate.is_file():
             if bg.source not in BUILTIN_MUSIC:
                 raise BuildError(f"background file not found: {bg.source}")
-            candidate = music.track(bg.source)  # narrate's own rendering of Narakeet's track name
-        loop = fit_length(media.decode_audio(candidate, SR), total, tile=True) * bg.volume
+            try:
+                candidate = music.track(bg.source)  # narrate's own rendering of Narakeet's track name
+            except OSError as e:  # writing it to the cache
+                raise BuildError(f"background track {bg.source} couldn't be made: {e}") from None
+        media.ffmpeg()  # found (or fetched) first, so that a problem with ffmpeg isn't blamed on the file
+        try:
+            return media.decode_audio(candidate, SR)
+        except media.MediaError as e:
+            raise BuildError(f"background {bg.source} couldn't be decoded: {e}") from None
+
+    def _music(self, track: np.ndarray, total: int, scene_samples: list[int]) -> np.ndarray:
+        """The background track under `total` samples: looped, at its volume, faded over the first and
+        last scenes."""
+        bg = self.settings.background
+        loop = fit_length(track, total, tile=True) * bg.volume
         if bg.fade_in and scene_samples:
             n = min(scene_samples[0], total)
             loop[:n] *= np.linspace(0.0, 1.0, n, dtype=np.float32)
