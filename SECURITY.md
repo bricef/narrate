@@ -78,8 +78,9 @@ What does matter, for example:
   answers. The preview runs them sandboxed, each in an origin of its own, so
   they can read the project's files, as in a build, but not use the studio. A
   way past this is a vulnerability.
-- **Leaking keys:** `ELEVENLABS_API_KEY`, or the credentials a `render:web`
-  block names, ending up in a video, a log, an error, a cache, a response, or
-  the published image.
+- **Leaking keys:** `ELEVENLABS_API_KEY`, the credentials a `render:web`
+  block names, or a proxy's credentials (in `HTTPS_PROXY` or `HTTP_PROXY`),
+  ending up in a video, a log, an error, a note, a cache, a response, or the
+  published image, or being sent anywhere but the proxy.
 
 If you're not sure, report it privately anyway.

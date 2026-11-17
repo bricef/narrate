@@ -277,22 +277,31 @@ narrate build project.zip                 # a ZIP of the script and its files
     directly, and still checked.
   - **Credentials:** a user name and password in the proxy's URL, such as
     `http://user:pass@proxy:3128`, go to the proxy (Basic authentication)
-    and never into a message. When the proxy refuses a `render:web` page,
-    the error says what it answered, such as 407 for wrong credentials.
-  - **Only `http://` proxies:** `ALL_PROXY`, and proxies with another scheme
-    such as `socks5://`, are ignored, and pages connect directly. An
-    `https://` proxy, with TLS to the proxy itself, isn't supported, and a
-    `render:web` capture says so. Give the proxy's `http://` address.
+    and never into a message. Percent-encode `@`, `/`, `:`, `?` and `#` in
+    them, as `%40`, `%2F`, `%3A`, `%3F` and `%23`. A proxy URL with anything
+    after its host and port but a `/` is refused, so no part of a password
+    is ever taken for the host.
+  - **When the proxy fails:** it refuses a tunnel, such as 407 for wrong
+    credentials, can't be reached, or doesn't answer within 20 seconds. A
+    `render:web` capture then stops, saying what happened, and anything else
+    a page loads that the proxy kept out is noted, once for each reason.
+  - **Only `http://` proxies:** without `--allow-local-network`, `ALL_PROXY`
+    and proxies with another scheme, such as `socks5://`, are ignored.
+    narrate can't tunnel through them, so pages connect directly, as before
+    narrate used proxies at all. An `https://` proxy, with TLS to the proxy
+    itself, isn't supported either. But it's refused rather than ignored: it
+    is plainly the proxy meant for web pages, and going around it would be
+    quietly wrong. Builds say so. Give the proxy's `http://` address.
   - **This machine must look up names:** on a network where only the proxy
     can, pages still reach nothing
     ([#132](https://github.com/bricef/narrate/issues/132)).
   - **Ports:** proxies that allow tunnels only to port 443, as Squid does by
     default, refuse `http://` pages.
   - **With `--allow-local-network`,** narrate checks nothing, and Chromium
-    finds the proxy itself, as a browser would: from these variables on a
-    Linux server. It sends this machine's own addresses (loopback and
-    link-local) straight there, and anything else through the proxy unless
-    `NO_PROXY` lists it.
+    finds the proxy itself, as a browser would: on a Linux server, from these
+    variables, `ALL_PROXY` included. It sends this machine's own addresses
+    (loopback and link-local) straight there, and anything else through the
+    proxy unless `NO_PROXY` lists it.
 - **Intermediate files** are deleted afterwards; `--keep-work DIR` keeps them
   for inspection.
 - **First build:** the Kokoro voice model downloads (about 350 MB), and from
