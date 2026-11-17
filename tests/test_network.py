@@ -8,9 +8,11 @@ machine too, and no test reaches the internet.
 
 import asyncio
 import base64
+import ipaddress
 import logging
 import os
 import socket
+import sys
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -79,7 +81,8 @@ class ConnectProxy:
     target or by address: "tunnel" (with the status line `opened`), a status such as 407, "close" (it closes
     without a word), "silence" (it never answers) or "nonsense" (not HTTP). `connections` counts the
     connections made to it, and `hung_up` is released for each the other side closed after an answer that
-    opened no tunnel."""
+    opened no tunnel. A request for a URL, as a browser sends an HTTP proxy for an http:// page, is listed in
+    `asked` too, and answered with a green page."""
 
     def __init__(self, to: dict[str, str] | None = None, answer: str | int | dict = "tunnel",
                  opened: str = "HTTP/1.1 200 Connection established"):
@@ -108,8 +111,13 @@ class ConnectProxy:
         try:
             request = (await reader.readuntil(b"\r\n\r\n")).decode()
             self.requests.append(request)
-            target = request.split()[1]
+            method, target = request.split()[:2]
             self.asked.append(target)
+            if method != "CONNECT":
+                body = b"<!doctype html><body style='background: #0f0'>"
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n"
+                             b"Content-Length: %d\r\n\r\n%s" % (len(body), body))
+                return
             host, port = target.rsplit(":", 1)
             host = host.strip("[]")
             answer = self.answer.get(host, "tunnel") if isinstance(self.answer, dict) else self.answer
@@ -153,20 +161,34 @@ def proxies():
         proxy.stop()
 
 
-@pytest.fixture
-def outbound(monkeypatch):
-    """Every connection Guard makes itself, as address:port. Those to a public address fail, as on a network
-    where only a proxy reaches the internet; so a test can't reach it either."""
-    made: list[str] = []
-    connect = network.connect
+LOOPBACK = ("127.0.0.1", "::1")
 
-    async def only_here(address, port):
-        made.append(f"[{address}]:{port}" if ":" in address else f"{address}:{port}")
-        if address in (PUBLIC, PUBLIC6):
-            raise OSError("no route to the internet but through the proxy")
-        return await connect(address, port)
+
+@pytest.fixture(autouse=True)
+def outbound(monkeypatch):
+    """Every connection Guard makes itself, as host:port. Only this machine's loopback addresses are
+    connected to: anything else fails before it's looked up, as on a network where only a proxy reaches the
+    internet, so no test can reach it, whatever the code it tests does. Names other than localhost aren't
+    looked up either: a test gives its own addresses for them."""
+    made: list[str] = []
+    connect, resolve = network.connect, network.resolve
+
+    async def only_here(host, port):
+        made.append(f"[{host}]:{port}" if ":" in host else f"{host}:{port}")
+        if host not in LOOPBACK:
+            raise OSError("no route from the tests but to this machine")
+        return await connect(host, port)
+
+    def only_literals(host, port):
+        try:
+            ipaddress.ip_address(host.split("%")[0])
+        except ValueError:
+            if host != "localhost":
+                raise OSError(f"the tests look up no names: {host}") from None
+        return resolve(host, port)
 
     monkeypatch.setattr(network, "connect", only_here)
+    monkeypatch.setattr(network, "resolve", only_literals)
     return made
 
 
@@ -202,9 +224,10 @@ def own_cache(monkeypatch, tmp_path):
     monkeypatch.setenv("NARRATE_CACHE", str(tmp_path / "cache"))
     monkeypatch.delenv(network.ENV, raising=False)
     # No proxy but a test's own, whatever the shell running the tests has set: no *_PROXY variable, and on
-    # macOS and Windows not the system's settings either
+    # macOS and Windows not the system's settings either. With REQUEST_METHOD set, as for a CGI script,
+    # urllib ignores HTTP_PROXY
     for name in list(os.environ):
-        if name.lower().endswith("_proxy"):
+        if name.lower().endswith("_proxy") or name == "REQUEST_METHOD":
             monkeypatch.delenv(name)
     monkeypatch.setattr(urllib.request, "getproxies", urllib.request.getproxies_environment)
     monkeypatch.setattr(urllib.request, "proxy_bypass", urllib.request.proxy_bypass_environment)
@@ -353,6 +376,9 @@ def test_the_proxy_is_asked_for_each_checked_address_until_one_opens(site, proxi
     reply, answer, failures = through_guard("public.example", site.port)
     assert reply == network.GRANTED and b"background: #00f" in answer and failures == []
     assert proxy.asked == [f"[{PUBLIC6}]:{site.port}", f"{PUBLIC}:{site.port}"]
+    # The whole request: the address as the Host too, and no headers but those (no Proxy-Connection)
+    assert proxy.requests == [f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n"
+                              for target in (f"[{PUBLIC6}]:{site.port}", f"{PUBLIC}:{site.port}")]
     assert outbound == [f"127.0.0.1:{proxy.port}"] * 2
 
 
@@ -371,13 +397,11 @@ def test_any_2xx_answer_opens_the_tunnel(opened, site, proxies, outbound, monkey
     (599, "answered 599"),  # not a status HTTP names: its number alone
     ("nonsense", "answered with something that isn't HTTP"),
     ("close", "closed the connection without answering"),
-    ("silence", "didn't answer in 0.5 s"),
 ])
 def test_a_tunnel_the_proxy_doesnt_open_says_why_and_the_next_address_is_tried(answer, why, proxies, outbound,
                                                                                monkeypatch):
     proxy = proxies(answer=answer)
     monkeypatch.setenv("HTTP_PROXY", proxy.url)
-    monkeypatch.setattr(network, "CONNECT_TIMEOUT", 0.5)
     monkeypatch.setattr(network, "resolve", lambda host, port: [PUBLIC6, PUBLIC])
     reply, _, failures = through_guard("public.example", 8080)
     assert reply == network.UNREACHABLE
@@ -387,6 +411,37 @@ def test_a_tunnel_the_proxy_doesnt_open_says_why_and_the_next_address_is_tried(a
     assert outbound == [f"127.0.0.1:{proxy.port}"] * 2  # never around the proxy
     if answer != "close":  # the proxy kept its side open: narrate closed each connection
         assert proxy.hung_up.acquire(timeout=5) and proxy.hung_up.acquire(timeout=5)
+
+
+def test_a_proxy_that_doesnt_answer_in_time_ends_the_attempt(proxies, outbound, monkeypatch):
+    # Waiting again for the next address would outlast Chromium, which then can't be told why
+    proxy = proxies(answer="silence")
+    monkeypatch.setenv("HTTP_PROXY", proxy.url)
+    monkeypatch.setattr(network, "PROXY_TIMEOUT", 0.5)
+    monkeypatch.setattr(network, "resolve", lambda host, port: [PUBLIC6, PUBLIC])
+    reply, _, failures = through_guard("public.example", 8080)
+    assert reply == network.UNREACHABLE and proxy.asked == [f"[{PUBLIC6}]:8080"]
+    assert [str(network.Unreachable(f)) for f in failures] == [
+        f"couldn't reach public.example:8080 (the proxy at 127.0.0.1:{proxy.port} didn't answer in 0.5 s)"]
+    assert proxy.hung_up.acquire(timeout=5)  # narrate closed the connection it gave up on
+
+
+def test_a_build_says_when_its_proxy_doesnt_answer(tmp_path, proxies, outbound, monkeypatch):
+    proxy = proxies(answer="silence")
+    monkeypatch.setenv("HTTP_PROXY", proxy.url)
+    monkeypatch.setattr(network, "PROXY_TIMEOUT", 2)
+    monkeypatch.setattr(network, "resolve", lambda host, port: [PUBLIC])
+    with pytest.raises(BuildError, match=rf"couldn't reach public\.example:8080 \(the proxy at 127\.0\.0\.1:"
+                                         rf"{proxy.port} didn't answer in 2 s\)"):
+        build(tmp_path, web("http://public.example:8080/page.html"))
+
+
+def test_a_proxy_is_given_up_on_well_before_chromium_gives_up_on_the_guard():
+    # Chromium gives up on its SOCKS handshake with the guard after 30 s (kSOCKSConnectJobTimeoutInSeconds),
+    # counted from before the guard looks the name up. Only a failure the guard records before then reaches
+    # the build: after it, Chromium reports net::ERR_TIMED_OUT, with no word of the proxy
+    chromium_gives_up = 30
+    assert network.PROXY_TIMEOUT <= chromium_gives_up - 10
 
 
 def test_a_proxy_that_cant_be_reached_ends_the_attempt(outbound, monkeypatch):
@@ -476,9 +531,18 @@ def test_an_https_proxy_is_refused_and_says_so(proxies, outbound, monkeypatch):
     assert proxy.connections == 0 and outbound == []
 
 
+USER, PASSWORD = "narrator", "Xy7@s3cret/Qk9"  # a password with characters a URL must escape
+TOKEN = base64.b64encode(f"{USER}:{PASSWORD}".encode()).decode()  # as Proxy-Authorization carries them
+
+
+def told_nothing_of_the_credentials(told: str) -> bool:
+    """Whether `told` holds no part of the user name or password, and not their Base64 form either."""
+    return not any(part in told for part in (USER, "Xy7", "s3cret", "Qk9", TOKEN))
+
+
 def test_proxy_credentials_reach_the_proxy_and_nothing_else(tmp_path, proxies, outbound, monkeypatch, caplog):
     proxy = proxies(answer=407)
-    monkeypatch.setenv("HTTP_PROXY", f"http://narrator:s3cret%2Fword@127.0.0.1:{proxy.port}")
+    monkeypatch.setenv("HTTP_PROXY", f"http://{USER}:Xy7%40s3cret%2FQk9@127.0.0.1:{proxy.port}")
     monkeypatch.setattr(network, "resolve", lambda host, port: [PUBLIC])
     caplog.set_level(logging.DEBUG)
     script = tmp_path / "s.md"
@@ -486,39 +550,87 @@ def test_proxy_credentials_reach_the_proxy_and_nothing_else(tmp_path, proxies, o
     lines: list[str] = []
     with pytest.raises(BuildError) as raised:
         Builder(parse_file(script), SilentSynth(), log=lines.append).build(tmp_path / "s.mp4")
-    told = "\n".join([str(raised.value), *lines, caplog.text])
+    told = "\n".join([str(raised.value), *lines, caplog.text, repr(network.proxy_for("public.example", 8080))])
     assert f"(the proxy at 127.0.0.1:{proxy.port} answered 407 Proxy Authentication Required)" in told
-    assert "narrator" not in told and "s3cret" not in told
-    token = base64.b64encode(b"narrator:s3cret/word").decode()
-    assert proxy.requests and all(f"\r\nProxy-Authorization: Basic {token}\r\n" in r for r in proxy.requests)
-    assert "s3cret" not in repr(network.proxy_for("public.example", 8080))
+    assert told_nothing_of_the_credentials(told)
+    assert proxy.requests and set(proxy.requests) == {
+        f"CONNECT {PUBLIC}:8080 HTTP/1.1\r\nHost: {PUBLIC}:8080\r\nProxy-Authorization: Basic {TOKEN}\r\n\r\n"}
 
 
 @pytest.mark.parametrize("url, why", [
-    ("http://narrator:s3cret@127.0.0.1:{port}", "couldn't connect to the proxy at 127.0.0.1:{port}"),
-    ("https://narrator:s3cret@127.0.0.1:{port}",
+    ("http://narrator:Xy7%40s3cret%2FQk9@127.0.0.1:{port}", "couldn't connect to the proxy at 127.0.0.1:{port}"),
+    ("https://narrator:Xy7%40s3cret%2FQk9@127.0.0.1:{port}",
      "the proxy at 127.0.0.1:{port} is https://: narrate supports only http:// proxies"),
-    ("http://narrator:12/s3cret@127.0.0.1:{port}", "narrate can't read the proxy's URL"),  # / unescaped
-    ("http://narrator:s3cret@127.0.0.1:port", "narrate can't read the proxy's URL"),
+    # Characters left unescaped: what follows the first /, ? or # would be taken for the host
+    ("http://narrator:Xy7@s3cret/Qk9@127.0.0.1:{port}", "narrate can't read the proxy's URL"),
+    ("http://narrator:Xy7@s3cret?Qk9@127.0.0.1:{port}", "narrate can't read the proxy's URL"),
+    ("http://narrator:Xy7@s3cret#Qk9@127.0.0.1:{port}", "narrate can't read the proxy's URL"),
+    ("http://narrator:Xy7/s3cretQk9@127.0.0.1:{port}", "narrate can't read the proxy's URL"),
+    ("http://narrator:Xy7s3cretQk9@127.0.0.1:port", "narrate can't read the proxy's URL"),
 ])
-def test_a_proxy_that_cant_be_used_never_shows_its_credentials(url, why, outbound, monkeypatch):
+def test_a_proxy_that_cant_be_used_never_shows_its_credentials(url, why, outbound, monkeypatch, caplog):
     port = closed_port()
     monkeypatch.setenv("HTTP_PROXY", url.format(port=port))
+    caplog.set_level(logging.DEBUG)
     reply, _, failures = through_guard(PUBLIC, 8080)
     assert reply == network.UNREACHABLE
-    assert str(network.Unreachable(failures[0])) == f"couldn't reach {PUBLIC}:8080 ({why.format(port=port)})"
-    assert outbound in ([], [f"127.0.0.1:{port}"])  # at most the proxy: never around it
+    shown = str(network.Unreachable(failures[0]))
+    assert shown == f"couldn't reach {PUBLIC}:8080 ({why.format(port=port)})"
+    assert told_nothing_of_the_credentials(shown + caplog.text)
+    # Nothing looked up or connected to but the proxy, and only when its URL could be read
+    assert outbound == ([f"127.0.0.1:{port}"] if why.startswith("couldn't connect") else [])
 
 
-def test_with_local_addresses_allowed_chromium_reaches_them_without_the_proxy(tmp_path, site, proxies,
-                                                                              monkeypatch):
-    # The guard is off, as on main, and Chromium reads the proxy variables itself: it never sends this
-    # machine's own addresses to a proxy
+@pytest.mark.parametrize("trouble, why", [
+    ("refuses", "the proxy at 127.0.0.1:{port} answered 407 Proxy Authentication Required"),
+    ("is down", "couldn't connect to the proxy at 127.0.0.1:{port}"),
+    ("is https", "the proxy at 127.0.0.1:{port} is https://: narrate supports only http:// proxies"),
+    ("is unreadable", "narrate can't read the proxy's URL"),
+])
+def test_what_a_proxy_kept_from_a_page_is_noted_once(trouble, why, tmp_path, proxies, outbound, monkeypatch):
+    proxy = proxies(answer=407)
+    port = proxy.port if trouble == "refuses" else closed_port()
+    scheme, password = ("https" if trouble == "is https" else "http",
+                        "Xy7@s3cret/Qk9" if trouble == "is unreadable" else "Xy7%40s3cret%2FQk9")
+    monkeypatch.setenv("HTTP_PROXY", f"{scheme}://{USER}:{password}@127.0.0.1:{port}")
+    resolve = network.resolve
+    monkeypatch.setattr(network, "resolve", lambda host, port: [PUBLIC] if host == "public.example"
+                        else resolve(host, port))
+    (tmp_path / "scene.html").write_text("""<!doctype html>
+<link rel="stylesheet" href="http://public.example:8080/look.css">
+<body style="margin: 0; background: #00f"><img src="http://public.example:8080/picture.png">""")
+    result = build(tmp_path, "![](scene.html)")  # the scene builds, without what the proxy kept out
+    assert [n for n in result.notes if "proxy" in n] == [network.proxy_note(why.format(port=port))]
+    assert told_nothing_of_the_credentials("\n".join(result.notes))
+    if trouble == "refuses":  # once, though the proxy refused both
+        assert set(proxy.asked) == {f"{PUBLIC}:8080"} and len(proxy.asked) >= 2
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Chromium reads the proxy variables on Linux; elsewhere it "
+                                                    "reads the system's settings")
+@pytest.mark.parametrize("variable", ["HTTP_PROXY", "ALL_PROXY"])
+def test_with_local_addresses_allowed_chromium_uses_the_proxy_itself_but_not_for_this_machine(
+        variable, tmp_path, site, proxies, monkeypatch):
+    # The guard is off, as on main, and Chromium reads the proxy variables itself, ALL_PROXY too. It sends a
+    # name to the proxy, and this machine's own address straight there
+    from narrate import doctor
+    launch, launched = doctor.launch_chromium, []
+
+    def resolving_nothing(playwright, args):
+        # Were Chromium not to use the proxy, it couldn't look the name up and go out to the internet either
+        launched.append(args := [*args, "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"])
+        return launch(playwright, args)
+
+    monkeypatch.setattr(doctor, "launch_chromium", resolving_nothing)
+    for name in ("XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "KDE_FULL_SESSION", "GNOME_DESKTOP_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)  # a desktop's own proxy settings would come before the variables
     proxy = proxies()
-    monkeypatch.setenv("HTTP_PROXY", proxy.url)
-    monkeypatch.setenv("HTTPS_PROXY", proxy.url)
+    monkeypatch.setenv(variable, proxy.url)
     build(tmp_path, web(f"{site.url}/page.html"), local_network=True)
-    assert site.asked == ["/page.html"] and proxy.connections == 0
+    assert launched and site.asked == ["/page.html"] and proxy.asked == []  # this machine: straight there
+    result = build(tmp_path, web("http://public.example/page.html"), name="named", local_network=True)
+    assert proxy.asked == ["http://public.example/page.html"]  # a name: through the proxy
+    assert frame(result.video)[90, 160][1] > 200  # the proxy's green page
 
 
 def frame(video: Path) -> np.ndarray:

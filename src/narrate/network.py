@@ -40,7 +40,11 @@ from http import HTTPStatus
 FLAG = "--allow-local-network"
 ENV = "NARRATE_ALLOW_LOCAL_NETWORK"
 ALLOW = f"builds reach only public addresses, unless {FLAG} allows local ones"
-CONNECT_TIMEOUT = 30  # seconds
+CONNECT_TIMEOUT = 30  # seconds, for each address connected to directly
+# Seconds for an HTTP proxy to take the connection and answer, together. Chromium gives up on the SOCKS
+# handshake with the guard after 30 s, counted from before the guard starts, so this stays well under it:
+# the guard has said why by the time Chromium reports a failure
+PROXY_TIMEOUT = 20
 
 NAT64 = ipaddress.ip_network("64:ff9b::/96")
 # SOCKS5 (RFC 1928): the CONNECT command, address types, and replies
@@ -129,13 +133,17 @@ def proxy_for(host: str, port: int) -> Proxy | None:
     if scheme not in ("http", "https"):
         return None
     unreadable = ProxyError("narrate can't read the proxy's URL")  # its text could hold a password: never shown
+    # A proxy's URL is a host, with credentials and a port when it needs them, and nothing after it but a /.
+    # Anything more is a /, ? or # left unescaped in a password, which would put part of it in the host
+    # (user:pa/ss@host, user:p@ss?w@host): refused, rather than looked up and sent the credentials
+    if any(c in url.split("://", 1)[1].removesuffix("/") for c in "/?#"):
+        raise unreadable
     try:
         parts = urllib.parse.urlsplit(url)
         name, number = parts.hostname, parts.port or (443 if scheme == "https" else 80)
     except ValueError:
         raise unreadable from None
-    # user:pa/ss@host would take "user" for the host: an @ must end the host's part of the URL
-    if not name or ("@" in url and "@" not in parts.netloc):
+    if not name:
         raise unreadable
     if scheme == "https":
         raise ProxyError(f"the proxy at {Proxy(name, number)} is https://: narrate supports only http:// proxies")
@@ -148,18 +156,22 @@ def proxy_for(host: str, port: int) -> Proxy | None:
 
 async def tunnel(proxy: Proxy, address: str, port: int):
     """A connection to `address`, already checked, through `proxy`'s HTTP CONNECT tunnel (RFC 9110, 9.3.6).
-    The proxy is asked for the address, never a name. Raises ProxyError when the proxy can't be reached,
-    and TunnelError when it doesn't open the tunnel: it refuses, closes, or doesn't answer in time."""
+    The proxy is asked for the address, never a name. Raises ProxyError when the proxy can't be reached, or
+    doesn't answer within PROXY_TIMEOUT: Chromium would give up before another address could be tried.
+    Raises TunnelError when the proxy doesn't open this tunnel: it refuses, closes, or isn't speaking HTTP."""
+    deadline = asyncio.get_running_loop().time() + PROXY_TIMEOUT  # to connect and have the answer, together
     try:
-        reader, writer = await asyncio.wait_for(connect(proxy.host, proxy.port), CONNECT_TIMEOUT)
-    except (OSError, asyncio.TimeoutError):
+        async with asyncio.timeout_at(deadline):
+            reader, writer = await connect(proxy.host, proxy.port)
+    except OSError:  # TimeoutError too
         raise ProxyError(f"couldn't connect to the proxy at {proxy}") from None
     try:
-        status = await asyncio.wait_for(_ask(reader, writer, proxy, address, port), CONNECT_TIMEOUT)
+        async with asyncio.timeout_at(deadline):
+            status = await _ask(reader, writer, proxy, address, port)
     except BaseException as e:
         writer.close()  # whatever happened, a cancelled build too: no connection to the proxy is left open
-        if isinstance(e, asyncio.TimeoutError):
-            raise TunnelError(f"the proxy at {proxy} didn't answer in {CONNECT_TIMEOUT} s") from None
+        if isinstance(e, TimeoutError):
+            raise ProxyError(f"the proxy at {proxy} didn't answer in {PROXY_TIMEOUT} s") from None
         if isinstance(e, (EOFError, OSError)):
             raise TunnelError(f"the proxy at {proxy} closed the connection without answering") from None
         if isinstance(e, asyncio.LimitOverrunError):
@@ -194,6 +206,12 @@ async def _ask(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, proxy
 def note(page: str, target: str) -> str:
     """What a build says of a local address a page tried to reach."""
     return f"{page} tried to reach {target}, a local address (refused: {ALLOW})"
+
+
+def proxy_note(why: str) -> str:
+    """What a build says when an HTTP proxy is why something didn't load: the same for every page and
+    resource that failed for the same reason, so it's said once."""
+    return f"captured pages couldn't load everything ({why})"
 
 
 class Guard:
@@ -300,7 +318,7 @@ class Guard:
                     why = str(e)
                 except (OSError, asyncio.TimeoutError):
                     continue
-        except ProxyError as e:  # the proxy itself can't be used or reached: no address will do
+        except ProxyError as e:  # the proxy can't be used, reached, or doesn't answer in time: stop there
             why = str(e)
         self._fail(Failure(target, False, why))
         return UNREACHABLE
