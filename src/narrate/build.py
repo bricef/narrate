@@ -657,7 +657,7 @@ class Builder:
 
     def build(self, out: Path, *, workdir: Path | None = None) -> BuildResult:
         own_workdir = workdir is None
-        work = Path(tempfile.mkdtemp(prefix="narrate-")) if own_workdir else workdir
+        work = Path(tempfile.mkdtemp(prefix="narrate-")) if own_workdir else workdir.resolve()
         work.mkdir(parents=True, exist_ok=True)
         try:
             return self._build(out, work)
